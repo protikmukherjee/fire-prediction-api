@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: fire-api
+    env: python
+    buildCommand: ""
+    startCommand: gunicorn fire_api:app
