@@ -10,8 +10,8 @@ app = Flask(__name__)
 
 # Load models
 fire_model = joblib.load("fire_model_balanced.pkl")
-power_model = tf.keras.models.load_model("power_model.keras")
-occupancy_model = tf.keras.models.load_model("occupancy_model.keras")
+power_model = tf.keras.models.load_model("power_model.keras", compile=False)
+occupancy_model = tf.keras.models.load_model("occupancy_model.keras", compile=False)
 
 # Helper for LSTM input formatting
 def prepare_lstm_input(data_dict, feature_order):
