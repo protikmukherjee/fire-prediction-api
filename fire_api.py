@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 import tensorflow as tf
 from datetime import datetime
+import os
 
-# Initialize Flask app
 app = Flask(__name__)
 
 # Load models
@@ -17,7 +17,7 @@ occupancy_model = tf.keras.models.load_model("occupancy_model.keras", compile=Fa
 def prepare_lstm_input(data_dict, feature_order):
     df = pd.DataFrame([data_dict])
     df = df[feature_order]
-    return np.expand_dims(df.values.astype(np.float32), axis=0)
+    return np.expand_dims(df.astype(np.float32).values, axis=0)
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -28,7 +28,7 @@ def predict():
     try:
         data = request.get_json()
 
-        ### --- Fire prediction ---
+        # --- Fire Prediction ---
         fire_features = pd.DataFrame([{
             "Temperature[C]": data.get("Heat", 0),
             "Humidity[%]": data.get("Humidity", 50),
@@ -38,7 +38,7 @@ def predict():
         fire_prob = fire_model.predict_proba(fire_features)[0][1]
         fire_status = "🔥 Fire risk!" if fire_prob > 0.4 else "✅ Safe"
 
-        ### --- Power prediction (LSTM) ---
+        # --- Power Prediction ---
         power_input = prepare_lstm_input(data, [
             "Light1_status", "Light1_brightness",
             "Light2_status", "Light2_brightness",
@@ -48,14 +48,13 @@ def predict():
         power_pred = power_model.predict(power_input)[0][0]
         power_status = "⚡ High usage" if power_pred > 2000 else "✅ Normal usage"
 
-        ### --- Occupancy prediction (LSTM) ---
+        # --- Occupancy Prediction ---
         occupancy_input = prepare_lstm_input(data, [
             "motion", "power_mW", "Light1_status", "Light2_status", "Light3_status"
         ])
         occ_pred = occupancy_model.predict(occupancy_input)[0][0]
         occ_status = "🚪 Active systems but no motion" if occ_pred > 0.5 else "✅ Occupancy aligns"
 
-        # Format response
         response = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "fire_probability": round(fire_prob, 2),
@@ -65,13 +64,12 @@ def predict():
             "occupancy_score": round(float(occ_pred), 2),
             "occupancy_status": occ_status
         }
+
         return jsonify(response)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-import os
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # default fallback
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
