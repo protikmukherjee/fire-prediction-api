@@ -1,75 +1,61 @@
-from flask import Flask, request, jsonify
-import joblib
-import pandas as pd
+#!/usr/bin/env python3
+import sys, json, pickle
+from datetime import datetime
 import numpy as np
 import tensorflow as tf
-from datetime import datetime
-import os
 
-app = Flask(__name__)
+# ——— Load your pickled fire model ———
+with open("fire_model_balanced.pkl", "rb") as f:
+    fire_model = pickle.load(f)
 
-# Load models
-fire_model = joblib.load("fire_model_balanced.pkl")
-power_model = tf.keras.models.load_model("power_model.keras", compile=False)
-occupancy_model = tf.keras.models.load_model("occupancy_model.keras", compile=False)
+# ——— Load the Keras occupancy & power models as before ———
+occupancy_model = tf.keras.models.load_model("occupancy_model.h5", compile=False)
+power_model     = tf.keras.models.load_model("power_model.h5",     compile=False)
 
-# Helper for LSTM input formatting
-def prepare_lstm_input(data_dict, feature_order):
-    df = pd.DataFrame([data_dict])
-    df = df[feature_order]
-    return np.expand_dims(df.astype(np.float32).values, axis=0)
-
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"})
-
-@app.route("/predict", methods=["POST"])
-def predict():
+def make_predictions(data):
+    # ——— Fire input & pred ———
+    f = data["SmartHomeSystem"]["SmartFireSystem"]
+    x_fire = np.array([[
+        f["Flame"], f["Heat"], f["Smoke"], f["power_mW"], f["index"]
+    ]])
+    # If your pickled model has predict_proba:
     try:
-        data = request.get_json()
+        p_fire = float(fire_model.predict_proba(x_fire)[0][1])
+    except AttributeError:
+        # fallback to raw predict
+        p_fire = float(fire_model.predict(x_fire)[0])
 
-        # --- Fire Prediction ---
-        fire_features = pd.DataFrame([{
-            "Temperature[C]": data.get("Heat", 0),
-            "Humidity[%]": data.get("Humidity", 50),
-            "TVOC[ppb]": data.get("Smoke", 0),
-            "eCO2[ppm]": data.get("eCO2", 400)
-        }])
-        fire_prob = fire_model.predict_proba(fire_features)[0][1]
-        fire_status = "🔥 Fire risk!" if fire_prob > 0.4 else "✅ Safe"
+    # ——— Occupancy input & pred ———
+    L = data["SmartHomeSystem"]["SmartLightSystem"]
+    G = data["SmartHomeSystem"]["SmartGarageDoorSystem"]
+    x_occ = np.array([[
+        int(L["Light1_status"]),
+        int(L["Light2_status"]),
+        int(L["Light3_status"]),
+        L["Light1_brightness"],
+        L["Light2_brightness"],
+        L["Light3_brightness"],
+        int(G.get("motion_detected", 0))
+    ]])
+    p_occ = float(occupancy_model.predict(x_occ)[0][0])
 
-        # --- Power Prediction ---
-        power_input = prepare_lstm_input(data, [
-            "Light1_status", "Light1_brightness",
-            "Light2_status", "Light2_brightness",
-            "Light3_status", "Light3_brightness",
-            "current_mA", "power_mW"
-        ])
-        power_pred = power_model.predict(power_input)[0][0]
-        power_status = "⚡ High usage" if power_pred > 2000 else "✅ Normal usage"
+    # ——— Power input & pred ———
+    p_pow = float(power_model.predict(x_occ)[0][0])
 
-        # --- Occupancy Prediction ---
-        occupancy_input = prepare_lstm_input(data, [
-            "motion", "power_mW", "Light1_status", "Light2_status", "Light3_status"
-        ])
-        occ_pred = occupancy_model.predict(occupancy_input)[0][0]
-        occ_status = "🚪 Active systems but no motion" if occ_pred > 0.5 else "✅ Occupancy aligns"
+    # ——— Build recommendations (same as before) ———
+    recs = []
+    if p_fire > 0.4:
+        recs.append("🔥 High fire risk detected – please monitor immediately.")
+    # …etc…
 
-        response = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "fire_probability": round(fire_prob, 2),
-            "fire_status": fire_status,
-            "power_usage": round(float(power_pred), 2),
-            "power_status": power_status,
-            "occupancy_score": round(float(occ_pred), 2),
-            "occupancy_status": occ_status
-        }
-
-        return jsonify(response)
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return p_fire, p_occ, p_pow, " | ".join(recs)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    payload = json.load(sys.stdin)
+    fire_p, occ_p, pow_p, recommendation = make_predictions(payload)
+    print(json.dumps({
+        "fire_probability":       fire_p,
+        "occupancy_probability":  occ_p,
+        "power_prediction":       pow_p,
+        "recommendation":         recommendation
+    }))
