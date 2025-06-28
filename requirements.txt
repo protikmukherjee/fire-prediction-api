@@ -3,6 +3,6 @@ gunicorn
 pandas
 joblib
 scikit-learn==1.4.1.post1
-tensorflow-cpu
+tensorflow==2.15.0
 keras
 numpy
