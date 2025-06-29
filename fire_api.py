@@ -1,31 +1,39 @@
 #!/usr/bin/env python3
+
+# ——— Monkey-patch InputLayer to drop unsupported batch_shape ———
+import tensorflow as _tf
+_orig_input_init = _tf.keras.layers.InputLayer.__init__
+def _patched_input_init(self, *args, **kwargs):
+    batch_shape = kwargs.pop("batch_shape", None)
+    if batch_shape is not None:
+        # convert [None, d1, d2…] → input_shape=(d1, d2…)
+        kwargs["input_shape"] = tuple(batch_shape[1:])
+    return _orig_input_init(self, *args, **kwargs)
+_tf.keras.layers.InputLayer.__init__ = _patched_input_init
+
+# ——— Now import everything else ———
 import sys, json, pickle
 from datetime import datetime
 import numpy as np
 import tensorflow as tf
 
-# ——— Load your pickled fire model ———
+# ——— Load models ———
 with open("fire_model_balanced.pkl", "rb") as f:
     fire_model = pickle.load(f)
 
-# ——— Load the Keras occupancy & power models as before ———
 occupancy_model = tf.keras.models.load_model("occupancy_model.h5", compile=False)
 power_model     = tf.keras.models.load_model("power_model.h5",     compile=False)
 
 def make_predictions(data):
-    # ——— Fire input & pred ———
+    # — Fire prediction —
     f = data["SmartHomeSystem"]["SmartFireSystem"]
-    x_fire = np.array([[
-        f["Flame"], f["Heat"], f["Smoke"], f["power_mW"], f["index"]
-    ]])
-    # If your pickled model has predict_proba:
+    x_fire = np.array([[f["Flame"], f["Heat"], f["Smoke"], f["power_mW"], f["index"]]])
     try:
         p_fire = float(fire_model.predict_proba(x_fire)[0][1])
     except AttributeError:
-        # fallback to raw predict
         p_fire = float(fire_model.predict(x_fire)[0])
 
-    # ——— Occupancy input & pred ———
+    # — Occupancy prediction —
     L = data["SmartHomeSystem"]["SmartLightSystem"]
     G = data["SmartHomeSystem"]["SmartGarageDoorSystem"]
     x_occ = np.array([[
@@ -39,23 +47,39 @@ def make_predictions(data):
     ]])
     p_occ = float(occupancy_model.predict(x_occ)[0][0])
 
-    # ——— Power input & pred ———
+    # — Power prediction —
     p_pow = float(power_model.predict(x_occ)[0][0])
 
-    # ——— Build recommendations (same as before) ———
+    # — Build human-readable recommendations —
     recs = []
     if p_fire > 0.4:
         recs.append("🔥 High fire risk detected – please monitor immediately.")
-    # …etc…
 
+    tot = data["SmartHomeSystem"]["SystemOverview"]["total_power_mW"]
+    thr = data["SmartHomeSystem"].get("threshold_power_mW", None)
+    hour = datetime.now().hour
+
+    if thr and 6 <= hour <= 18 and tot > thr:
+        recs.append(f"Room lights during daytime may push total power ({tot:.0f} mW) above limit ({thr}).")
+
+    if not G.get("motion_detected", False) and G.get("isOn", False):
+        recs.append("Garage system has been idle for a while. Consider turning it off.")
+
+    if p_occ < 0.2 and tot > (thr or 0):
+        recs.append("Power usage is high but no motion detected. System may be unnecessarily active.")
+
+    if (hour < 6 or hour > 22) and p_occ < 0.5 and L["Light3_status"]:
+        recs.append("It's late and no one is in the kitchen (room 3). Consider turning selected appliances off.")
+
+    recs.append("Trend analysis over the last 7 days not yet implemented.")
     return p_fire, p_occ, p_pow, " | ".join(recs)
 
 if __name__ == "__main__":
     payload = json.load(sys.stdin)
     fire_p, occ_p, pow_p, recommendation = make_predictions(payload)
     print(json.dumps({
-        "fire_probability":       fire_p,
-        "occupancy_probability":  occ_p,
-        "power_prediction":       pow_p,
-        "recommendation":         recommendation
+        "fire_probability":      fire_p,
+        "occupancy_probability": occ_p,
+        "power_prediction":      pow_p,
+        "recommendation":        recommendation
     }))
