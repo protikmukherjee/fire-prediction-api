@@ -1,45 +1,53 @@
 // server.js
-const express    = require('express');
-const bodyParser = require('body-parser');
-const { spawn }  = require('child_process');
+const express = require('express');
+const { spawn } = require('child_process');
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
-// POST /predict → runs fire_api.py on stdin JSON, returns its JSON stdout
+// Use the PORT env var (Render) or 3000 locally
+const PORT = process.env.PORT || 3000;
+
 app.post('/predict', (req, res) => {
+  console.log('→ [POST /predict] received, payload keys:', Object.keys(req.body));
+
   let output = '';
   const py = spawn('python3', ['fire_api.py']);
 
-  // send the incoming JSON into the Python script
+  // Write JSON payload to Python's stdin
   py.stdin.write(JSON.stringify(req.body));
   py.stdin.end();
 
-  // collect stdout
-  py.stdout.on('data', chunk => output += chunk);
+  // Accumulate stdout
+  py.stdout.on('data', chunk => {
+    output += chunk.toString();
+  });
 
-  // in case of Python errors
-  py.stderr.on('data', chunk => console.error('[fire_api.py stderr]', chunk.toString()));
+  // Log any Python stderr
+  py.stderr.on('data', chunk => {
+    console.error('↳ [fire_api.py stderr]', chunk.toString());
+  });
 
   py.on('close', code => {
+    console.log(`← [fire_api.py] exited with code=${code}, stdout length=${output.length}`);
     if (code !== 0) {
       return res
         .status(500)
         .json({ error: `fire_api.py exited ${code}`, raw: output });
     }
     try {
-      const parsed = JSON.parse(output);
-      res.json(parsed);
-    } catch (err) {
-      res
+      const json = JSON.parse(output);
+      console.log('✔ [fire_api.py] returned valid JSON');
+      return res.json(json);
+    } catch (parseErr) {
+      console.error('✖ JSON parse error from fire_api.py:', parseErr);
+      return res
         .status(500)
-        .json({ error: `Invalid JSON from fire_api.py: ${err}`, raw: output });
+        .json({ error: 'Invalid JSON from fire_api.py', details: parseErr.message, raw: output });
     }
   });
 });
 
-// listen on $PORT (Render sets this) or 3000 locally
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server listening on port ${PORT}`);
 });
